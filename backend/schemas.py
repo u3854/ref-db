@@ -53,6 +53,7 @@ class BatchTagsRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = ""
+    similar_to_image_id: int | None = None
     folder_id: int | None = None
     tag_ids: list[int] = Field(default_factory=list)
     tag_mode: Literal["all", "any"] = "all"
@@ -172,3 +173,16 @@ class HealthResponse(BaseModel):
     total_images: int
     total_folders: int
     image_max_edge: int
+
+
+class LibraryStatsResponse(BaseModel):
+    total_images: int
+    total_folders: int
+    total_tags: int
+    images_with_head: int
+    images_with_torso: int
+    images_with_both: int
+    untagged_images: int
+    folder_source_count: int
+    direct_import_count: int
+    storage_bytes: int

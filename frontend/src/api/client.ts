@@ -5,6 +5,7 @@ import type {
   ImageDetail,
   ImportResponse,
   IndexStatus,
+  LibraryStatsResponse,
   SearchRequest,
   SearchResponse,
   TagInfo,
@@ -31,6 +32,7 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => jsonFetch<HealthResponse>("/api/health"),
+  stats: () => jsonFetch<LibraryStatsResponse>("/api/stats"),
   search: (body: SearchRequest) =>
     jsonFetch<SearchResponse>("/api/search", {
       method: "POST",

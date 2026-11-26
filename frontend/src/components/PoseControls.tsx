@@ -14,9 +14,63 @@ function snap(val: number, step: number): number {
   return Math.round(val / step) * step;
 }
 
+function describeHead(yaw: number, pitch: number, active: boolean): string {
+  if (!active) return "Any angle";
+  let h = "Front";
+  if (yaw <= -60) h = "Profile L";
+  else if (yaw <= -15) h = "3/4 L";
+  else if (yaw >= 60) h = "Profile R";
+  else if (yaw >= 15) h = "3/4 R";
+
+  let v = "Level";
+  if (pitch >= 15) v = "Up";
+  else if (pitch <= -15) v = "Down";
+  return `${h} · ${v}`;
+}
+
+function describeTorso(yaw: number, lean: number, active: boolean): string {
+  if (!active) return "Any angle";
+  const ay = Math.abs(yaw);
+  let dir = "Front";
+  if (ay >= 150) dir = "Back";
+  else if (ay >= 110) dir = yaw < 0 ? "Back 3/4 L" : "Back 3/4 R";
+  else if (ay >= 65) dir = yaw < 0 ? "Side L" : "Side R";
+  else if (ay >= 15) dir = yaw < 0 ? "3/4 L" : "3/4 R";
+
+  let tilt = "Upright";
+  if (lean <= -15) tilt = "Lean Fwd";
+  else if (lean >= 15) tilt = "Lean Back";
+  return `${dir} · ${tilt}`;
+}
+
+function describeSectorPath(
+  cx: number,
+  cy: number,
+  r: number,
+  centerYawDeg: number,
+  tolDeg: number
+): string {
+  if (tolDeg >= 179) {
+    return `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - 0.01} ${cy - r} Z`;
+  }
+  const startRad = ((centerYawDeg - tolDeg) * Math.PI) / 180;
+  const endRad = ((centerYawDeg + tolDeg) * Math.PI) / 180;
+  const x1 = cx + Math.sin(startRad) * r;
+  const y1 = cy + Math.cos(startRad) * r;
+  const x2 = cx + Math.sin(endRad) * r;
+  const y2 = cy + Math.cos(endRad) * r;
+  const largeArc = tolDeg * 2 > 180 ? 1 : 0;
+  // Counter-clockwise on screen corresponds to increasing yaw (bottom->right->top)
+  return `M ${cx} ${cy} L ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${largeArc} 0 ${x2.toFixed(1)} ${y2.toFixed(1)} Z`;
+}
+
 export function PoseControls({ filters, onChange }: PoseControlsProps) {
   const headSvgRef = useRef<SVGSVGElement | null>(null);
-  const torsoSvgRef = useRef<SVGSVGElement | null>(null);
+  const torsoFrontSvgRef = useRef<SVGSVGElement | null>(null);
+  const torsoDialSvgRef = useRef<SVGSVGElement | null>(null);
+
+  const headActive = filters.use_head_yaw || filters.use_head_pitch;
+  const torsoActive = filters.use_torso_yaw || filters.use_torso_lean;
 
   const updateHeadFromPointer = (clientX: number, clientY: number) => {
     const svg = headSvgRef.current;
@@ -24,7 +78,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
     const rect = svg.getBoundingClientRect();
     const nx = clamp((clientX - rect.left) / rect.width, 0, 1);
     const ny = clamp((clientY - rect.top) / rect.height, 0, 1);
-    // X: 0..1 -> -90..+90; Y: 0..1 -> +60..-60 (up is top)
+    // X: 0..1 -> -90..+90 (L to R); Y: 0..1 -> +60..-60 (UP to DOWN)
     const yaw = snap((nx - 0.5) * 180, 5);
     const pitch = snap((0.5 - ny) * 120, 5);
     onChange({
@@ -35,16 +89,35 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
     });
   };
 
-  const updateTorsoFromPointer = (clientX: number, clientY: number) => {
-    const svg = torsoSvgRef.current;
+  const updateTorsoFrontFromPointer = (clientX: number, clientY: number) => {
+    const svg = torsoFrontSvgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const nx = clamp((clientX - rect.left) / rect.width, 0, 1);
+    const ny = clamp((clientY - rect.top) / rect.height, 0, 1);
+    const isBack = Math.abs(filters.torso_yaw) > 90;
+    let nextYaw = snap((nx - 0.5) * 180, 5);
+    if (isBack) {
+      nextYaw = nextYaw >= 0 ? 180 - nextYaw : -180 - nextYaw;
+    }
+    const nextLean = snap((0.5 - ny) * 120, 5);
+    onChange({
+      use_torso_yaw: true,
+      use_torso_lean: true,
+      torso_yaw: clamp(nextYaw, -180, 180),
+      torso_lean: clamp(nextLean, -60, 60),
+    });
+  };
+
+  const updateTorsoDialFromPointer = (clientX: number, clientY: number) => {
+    const svg = torsoDialSvgRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
     const dx = clientX - cx;
     const dy = clientY - cy;
-    // Bottom of compass (dy > 0, dx = 0) = 0 deg (facing viewer)
-    // Left (dx < 0) = negative yaw; Right (dx > 0) = positive yaw; Top = +-180 deg (back)
+    // Bottom (camera side) = 0 deg (Front); Left = -90 deg; Right = +90 deg; Top = +-180 deg (Back)
     const deg = snap((Math.atan2(dx, dy) * 180) / Math.PI, 5);
     onChange({
       use_torso_yaw: true,
@@ -68,21 +141,53 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
     updater(e.clientX, e.clientY);
   };
 
-  // Head indicator coordinates in 180x140 SVG viewBox
-  const hx = 90 + (filters.head_yaw / 90) * 68;
-  const hy = 70 - (filters.head_pitch / 60) * 48;
+  const toggleFrontBack = () => {
+    const y = filters.torso_yaw;
+    const flipped = y >= 0 ? 180 - y : -180 - y;
+    onChange({ use_torso_yaw: true, torso_yaw: clamp(Math.round(flipped), -180, 180) });
+  };
 
-  // Torso compass vector (angle 0 = bottom (0, +R), +90 = right (+R, 0), +-180 = top)
-  const rad = (filters.torso_yaw * Math.PI) / 180;
-  const compassR = 54;
-  const tx = 90 + Math.sin(rad) * compassR;
-  const ty = 90 + Math.cos(rad) * compassR;
-  // Shoulder bar perpendicular to facing direction
-  const shHalf = 22;
-  const shX1 = 90 - Math.cos(rad) * shHalf;
-  const shY1 = 90 + Math.sin(rad) * shHalf;
-  const shX2 = 90 + Math.cos(rad) * shHalf;
-  const shY2 = 90 - Math.sin(rad) * shHalf;
+  // --- Head 3D sphere projection ---
+  const hx = 90 + (filters.head_yaw / 90) * 62;
+  const hy = 70 - (filters.head_pitch / 60) * 44;
+  const headTolRx = Math.max(8, (filters.head_tol / 90) * 62);
+  const headTolRy = Math.max(8, (filters.head_tol / 60) * 44);
+  const browShiftX = Math.sin((filters.head_yaw * Math.PI) / 180) * 26;
+  const browShiftY = -Math.sin((filters.head_pitch * Math.PI) / 180) * 24;
+
+  // --- Torso 3D front mannequin + top-down dial geometry ---
+  const yawRad = (filters.torso_yaw * Math.PI) / 180;
+  const leanRad = (filters.torso_lean * Math.PI) / 180;
+  const isBackFacing = Math.abs(filters.torso_yaw) > 90;
+
+  // Top-down dial vectors
+  const dialR = 46;
+  const dialX = 70 + Math.sin(yawRad) * dialR;
+  const dialY = 66 + Math.cos(yawRad) * dialR;
+  const shHalf = 19;
+  const shX1 = 70 - Math.cos(yawRad) * shHalf;
+  const shY1 = 66 + Math.sin(yawRad) * shHalf;
+  const shX2 = 70 + Math.cos(yawRad) * shHalf;
+  const shY2 = 66 - Math.sin(yawRad) * shHalf;
+
+  // Camera-view mannequin projection (cx=62, cy=66 in 124x132 box)
+  const mCx = 62;
+  const mCy = 68;
+  const shoulderHalfWidth = Math.max(7, Math.abs(Math.cos(yawRad)) * 31);
+  const chestOffset = Math.sin(yawRad) * 16;
+  // Positive lean = leaning back (shoulders slightly higher/narrower), Negative = leaning forward toward camera
+  const leanShiftY = -Math.sin(leanRad) * 14;
+  const leanScaleTop = 1 - Math.sin(leanRad) * 0.14;
+  const topShY = mCy - 26 + leanShiftY * 0.5;
+  const waistY = mCy + 26;
+  const topHalfW = shoulderHalfWidth * leanScaleTop;
+  const waistHalfW = Math.max(6, Math.abs(Math.cos(yawRad)) * 18);
+  const ribTopLeft = mCx - topHalfW;
+  const ribTopRight = mCx + topHalfW;
+  const waistLeft = mCx - waistHalfW;
+  const waistRight = mCx + waistHalfW;
+  const spineCenterTopX = mCx + chestOffset * 0.7;
+  const headAnchorY = topShY - 11;
 
   return (
     <>
@@ -116,6 +221,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
                 use_head_pitch: false,
                 use_torso_yaw: true,
                 torso_yaw: 0,
+                use_torso_lean: false,
               })
             }
           >
@@ -131,6 +237,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
                 use_head_pitch: false,
                 use_torso_yaw: true,
                 torso_yaw: -35,
+                use_torso_lean: false,
               })
             }
           >
@@ -146,6 +253,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
                 use_head_pitch: false,
                 use_torso_yaw: true,
                 torso_yaw: 35,
+                use_torso_lean: false,
               })
             }
           >
@@ -161,6 +269,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
                 use_head_pitch: false,
                 use_torso_yaw: true,
                 torso_yaw: -85,
+                use_torso_lean: false,
               })
             }
           >
@@ -176,6 +285,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
                 use_head_pitch: false,
                 use_torso_yaw: true,
                 torso_yaw: 85,
+                use_torso_lean: false,
               })
             }
           >
@@ -190,6 +300,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
                 use_head_pitch: false,
                 use_torso_yaw: true,
                 torso_yaw: 180,
+                use_torso_lean: false,
               })
             }
           >
@@ -207,8 +318,8 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
               onChange({ match_mode: e.target.value as "paired" | "independent" })
             }
           >
-            <option value="paired">Paired Person</option>
-            <option value="independent">Any Head/Torso</option>
+            <option value="paired">Same Person (Paired)</option>
+            <option value="independent">Any Head / Torso</option>
           </select>
         </div>
       </div>
@@ -217,8 +328,15 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
       <div className="section-card">
         <div className="section-header">
           <span>Head Angle</span>
-          <span style={{ color: "var(--text-primary)" }}>
-            Y:{filters.head_yaw}° / P:{filters.head_pitch}°
+          <span
+            style={{
+              color: headActive ? "var(--accent-hover)" : "var(--text-muted)",
+              textTransform: "none",
+              letterSpacing: 0,
+              fontSize: 11,
+            }}
+          >
+            {describeHead(filters.head_yaw, filters.head_pitch, headActive)}
           </span>
         </div>
 
@@ -237,51 +355,81 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
               height="132"
               rx="10"
               fill="#111216"
-              stroke="#2c303a"
+              stroke={headActive ? "#3a5699" : "#2c303a"}
             />
-            <line x1="90" y1="12" x2="90" y2="128" stroke="#262a34" strokeDasharray="3 3" />
-            <line x1="14" y1="70" x2="166" y2="70" stroke="#262a34" strokeDasharray="3 3" />
-            <ellipse cx="90" cy="70" rx="34" ry="42" fill="none" stroke="#313644" strokeWidth="1.5" />
+            <line x1="90" y1="14" x2="90" y2="126" stroke="#222631" strokeDasharray="3 3" />
+            <line x1="14" y1="70" x2="166" y2="70" stroke="#222631" strokeDasharray="3 3" />
 
-            {/* Projected head gaze cross */}
+            {/* Tolerance halo around target */}
+            {headActive && (
+              <ellipse
+                cx={hx}
+                cy={hy}
+                rx={headTolRx}
+                ry={headTolRy}
+                fill="rgba(91, 140, 255, 0.12)"
+                stroke="rgba(91, 140, 255, 0.38)"
+                strokeDasharray="3 2"
+              />
+            )}
+
+            {/* Loomis cranial sphere */}
             <ellipse
-              cx={90 + (filters.head_yaw / 90) * 14}
-              cy={70 - (filters.head_pitch / 60) * 10}
-              rx={Math.max(12, 26 - Math.abs(filters.head_yaw) * 0.14)}
-              ry={32}
-              fill="rgba(91, 140, 255, 0.1)"
-              stroke={filters.use_head_yaw || filters.use_head_pitch ? "#5b8cff" : "#4b5263"}
+              cx="90"
+              cy="70"
+              rx="32"
+              ry="38"
+              fill="rgba(255,255,255,0.02)"
+              stroke={headActive ? "#5b8cff" : "#3a4050"}
               strokeWidth="1.5"
             />
+            {/* Brow / eye horizontal arc & centerline */}
+            <path
+              d={`M ${90 - 28} ${70 + browShiftY * 0.4} Q ${90 + browShiftX * 0.5} ${70 + browShiftY} ${90 + 28} ${70 + browShiftY * 0.4}`}
+              fill="none"
+              stroke={headActive ? "#749eff" : "#565e70"}
+              strokeWidth="1.4"
+            />
+            <path
+              d={`M 90 32 Q ${90 + browShiftX} ${70 + browShiftY * 0.4} 90 108`}
+              fill="none"
+              stroke={headActive ? "#749eff" : "#565e70"}
+              strokeWidth="1.4"
+            />
+
             <line
-              x1="90"
-              y1="70"
+              x1={90 + browShiftX * 0.35}
+              y1={70 + browShiftY * 0.35}
               x2={hx}
               y2={hy}
-              stroke={filters.use_head_yaw || filters.use_head_pitch ? "#5b8cff" : "#6c7484"}
+              stroke={headActive ? "#5b8cff" : "#6c7484"}
               strokeWidth="2"
             />
             <circle
               cx={hx}
               cy={hy}
-              r="7"
-              fill={filters.use_head_yaw || filters.use_head_pitch ? "#5b8cff" : "#6c7484"}
+              r="6.5"
+              fill={headActive ? "#5b8cff" : "#6c7484"}
               stroke="#ffffff"
               strokeWidth="1.5"
             />
-            <text x="90" y="18" textAnchor="middle" fill="#6c7484" fontSize="9">
+
+            <text x="90" y="16" textAnchor="middle" fill="#6c7484" fontSize="9">
               UP (+60°)
             </text>
             <text x="90" y="131" textAnchor="middle" fill="#6c7484" fontSize="9">
               DOWN (-60°)
             </text>
-            <text x="14" y="73" fill="#6c7484" fontSize="9">
+            <text x="12" y="73" fill="#6c7484" fontSize="9">
               L
             </text>
-            <text x="160" y="73" fill="#6c7484" fontSize="9">
+            <text x="161" y="73" fill="#6c7484" fontSize="9">
               R
             </text>
           </svg>
+          <div className="pose-hint">
+            Drag where the face points in frame (Left/Right = Yaw, Up/Down = Pitch)
+          </div>
         </div>
 
         <div className="control-row">
@@ -291,7 +439,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
               checked={filters.use_head_yaw}
               onChange={(e) => onChange({ use_head_yaw: e.target.checked })}
             />
-            Filter Yaw
+            Turn (Yaw)
           </label>
           <span>{filters.head_yaw}°</span>
         </div>
@@ -313,7 +461,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
               checked={filters.use_head_pitch}
               onChange={(e) => onChange({ use_head_pitch: e.target.checked })}
             />
-            Filter Pitch
+            Tilt (Pitch)
           </label>
           <span>{filters.head_pitch}°</span>
         </div>
@@ -344,67 +492,218 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
         </div>
       </div>
 
-      {/* Torso Orientation Compass */}
+      {/* Torso Orientation: Synchronized 3D Front Mannequin + 360° Overhead Dial */}
       <div className="section-card">
         <div className="section-header">
           <span>Torso Angle (360°)</span>
-          <span style={{ color: "var(--text-primary)" }}>
-            Y:{filters.torso_yaw}° / L:{filters.torso_lean}°
+          <span
+            style={{
+              color: torsoActive ? "var(--accent-hover)" : "var(--text-muted)",
+              textTransform: "none",
+              letterSpacing: 0,
+              fontSize: 11,
+            }}
+          >
+            {describeTorso(filters.torso_yaw, filters.torso_lean, torsoActive)}
           </span>
         </div>
 
-        <div className="pose-pad-wrap">
-          <svg
-            ref={torsoSvgRef}
-            viewBox="0 0 180 180"
-            className="pose-svg"
-            style={{ maxWidth: 185 }}
-            onPointerDown={(e) => handlePointerDrag(e, updateTorsoFromPointer)}
-            onPointerMove={(e) => handlePointerMove(e, updateTorsoFromPointer)}
-          >
-            <circle cx="90" cy="90" r="78" fill="#111216" stroke="#2c303a" />
-            <circle cx="90" cy="90" r={compassR} fill="none" stroke="#282c36" strokeDasharray="3 3" />
-            <text x="90" y="23" textAnchor="middle" fill="#6c7484" fontSize="9">
-              BACK (±180°)
-            </text>
-            <text x="90" y="164" textAnchor="middle" fill="#6c7484" fontSize="9">
-              FRONT (0°)
-            </text>
-            <text x="16" y="93" fill="#6c7484" fontSize="9">
-              -90°
-            </text>
-            <text x="144" y="93" fill="#6c7484" fontSize="9">
-              +90°
-            </text>
+        <div className="torso-dual-wrap">
+          {/* Left: Camera-view 3D Mannequin (Turn + Lean) */}
+          <div className="torso-pane">
+            <svg
+              ref={torsoFrontSvgRef}
+              viewBox="0 0 124 134"
+              className="pose-svg"
+              onPointerDown={(e) => handlePointerDrag(e, updateTorsoFrontFromPointer)}
+              onPointerMove={(e) => handlePointerMove(e, updateTorsoFrontFromPointer)}
+            >
+              <rect
+                x="2"
+                y="2"
+                width="120"
+                height="130"
+                rx="8"
+                fill="#111216"
+                stroke={torsoActive ? "#3a5699" : "#2c303a"}
+              />
+              <text x="62" y="15" textAnchor="middle" fill="#6c7484" fontSize="8.5">
+                CAMERA VIEW
+              </text>
 
-            {/* Shoulder bar */}
-            <line
-              x1={shX1}
-              y1={shY1}
-              x2={shX2}
-              y2={shY2}
-              stroke="#9aa3b2"
-              strokeWidth="5"
-              strokeLinecap="round"
-            />
-            {/* Facing arrow */}
-            <line
-              x1="90"
-              y1="90"
-              x2={tx}
-              y2={ty}
-              stroke={filters.use_torso_yaw ? "#5b8cff" : "#6c7484"}
-              strokeWidth="2.5"
-            />
-            <circle
-              cx={tx}
-              cy={ty}
-              r="7"
-              fill={filters.use_torso_yaw ? "#5b8cff" : "#6c7484"}
-              stroke="#ffffff"
-              strokeWidth="1.5"
-            />
-          </svg>
+              {/* Head stub indicator above neck */}
+              <circle
+                cx={mCx + chestOffset * 0.25}
+                cy={headAnchorY}
+                r="8"
+                fill="none"
+                stroke="#3a4050"
+                strokeWidth="1.2"
+              />
+
+              {/* Ribcage / Torso polygon */}
+              <polygon
+                points={`${ribTopLeft.toFixed(1)},${topShY.toFixed(1)} ${ribTopRight.toFixed(1)},${topShY.toFixed(1)} ${waistRight.toFixed(1)},${waistY.toFixed(1)} ${waistLeft.toFixed(1)},${waistY.toFixed(1)}`}
+                fill={
+                  isBackFacing
+                    ? "rgba(154, 163, 178, 0.12)"
+                    : torsoActive
+                    ? "rgba(91, 140, 255, 0.16)"
+                    : "rgba(255, 255, 255, 0.04)"
+                }
+                stroke={
+                  isBackFacing
+                    ? "#9aa3b2"
+                    : torsoActive
+                    ? "#5b8cff"
+                    : "#5a6375"
+                }
+                strokeWidth="1.8"
+                strokeLinejoin="round"
+              />
+
+              {/* Shoulder line */}
+              <line
+                x1={ribTopLeft}
+                y1={topShY}
+                x2={ribTopRight}
+                y2={topShY}
+                stroke={isBackFacing ? "#9aa3b2" : "#749eff"}
+                strokeWidth="2.5"
+                strokeLinecap="round"
+              />
+
+              {/* Front = Chest V-collar + Sternum; Back = Dashed Spine */}
+              {isBackFacing ? (
+                <line
+                  x1={spineCenterTopX}
+                  y1={topShY + 3}
+                  x2={mCx}
+                  y2={waistY - 3}
+                  stroke="#9aa3b2"
+                  strokeWidth="1.8"
+                  strokeDasharray="3 3"
+                />
+              ) : (
+                <>
+                  <polyline
+                    points={`${(mCx - shoulderHalfWidth * 0.35).toFixed(1)},${topShY.toFixed(1)} ${spineCenterTopX.toFixed(1)},${(topShY + 12).toFixed(1)} ${(mCx + shoulderHalfWidth * 0.35).toFixed(1)},${topShY.toFixed(1)}`}
+                    fill="none"
+                    stroke={torsoActive ? "#93b4ff" : "#7b8496"}
+                    strokeWidth="1.6"
+                  />
+                  <line
+                    x1={spineCenterTopX}
+                    y1={topShY + 12}
+                    x2={mCx}
+                    y2={waistY - 3}
+                    stroke={torsoActive ? "#93b4ff" : "#7b8496"}
+                    strokeWidth="1.5"
+                  />
+                </>
+              )}
+
+              <text
+                x="62"
+                y="123"
+                textAnchor="middle"
+                fill={isBackFacing ? "#fbbf24" : "#749eff"}
+                fontSize="9"
+                fontWeight="600"
+              >
+                {isBackFacing ? "BACK SIDE" : "CHEST SIDE"}
+              </text>
+            </svg>
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{ width: "100%", fontSize: 11, padding: "3px 6px" }}
+              onClick={toggleFrontBack}
+            >
+              Flip Front / Back
+            </button>
+          </div>
+
+          {/* Right: Top-Down 360° Turntable Compass */}
+          <div className="torso-pane">
+            <svg
+              ref={torsoDialSvgRef}
+              viewBox="0 0 140 134"
+              className="pose-svg"
+              onPointerDown={(e) => handlePointerDrag(e, updateTorsoDialFromPointer)}
+              onPointerMove={(e) => handlePointerMove(e, updateTorsoDialFromPointer)}
+            >
+              <rect
+                x="2"
+                y="2"
+                width="136"
+                height="130"
+                rx="8"
+                fill="#111216"
+                stroke={torsoActive ? "#3a5699" : "#2c303a"}
+              />
+              <text x="70" y="14" textAnchor="middle" fill="#6c7484" fontSize="8">
+                TOP-DOWN 360° (BACK)
+              </text>
+
+              <circle cx="70" cy="66" r={dialR} fill="none" stroke="#282c36" strokeDasharray="3 3" />
+
+              {/* Tolerance sector wedge */}
+              {torsoActive && (
+                <path
+                  d={describeSectorPath(70, 66, dialR, filters.torso_yaw, filters.torso_tol)}
+                  fill="rgba(91, 140, 255, 0.14)"
+                  stroke="rgba(91, 140, 255, 0.3)"
+                />
+              )}
+
+              <text x="12" y="69" fill="#6c7484" fontSize="8.5">
+                L
+              </text>
+              <text x="121" y="69" fill="#6c7484" fontSize="8.5">
+                R
+              </text>
+              <text x="70" y="126" textAnchor="middle" fill="#749eff" fontSize="8">
+                FRONT (TOWARD CAM)
+              </text>
+
+              {/* Top-down shoulders bar */}
+              <line
+                x1={shX1}
+                y1={shY1}
+                x2={shX2}
+                y2={shY2}
+                stroke="#9aa3b2"
+                strokeWidth="4.5"
+                strokeLinecap="round"
+              />
+              {/* Chest facing arrow */}
+              <line
+                x1="70"
+                y1="66"
+                x2={dialX}
+                y2={dialY}
+                stroke={torsoActive ? "#5b8cff" : "#6c7484"}
+                strokeWidth="2.2"
+              />
+              <circle
+                cx={dialX}
+                cy={dialY}
+                r="5.5"
+                fill={torsoActive ? "#5b8cff" : "#6c7484"}
+                stroke="#ffffff"
+                strokeWidth="1.4"
+              />
+            </svg>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", textAlign: "center" }}>
+              Drag ring around 360°
+            </div>
+          </div>
+        </div>
+
+        <div className="pose-hint">
+          Drag <strong>Camera View</strong> left/right to turn & up/down to lean, or spin{" "}
+          <strong>Top-Down 360°</strong> for chest/back direction.
         </div>
 
         <div className="control-row">
@@ -414,7 +713,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
               checked={filters.use_torso_yaw}
               onChange={(e) => onChange({ use_torso_yaw: e.target.checked })}
             />
-            Filter Torso Yaw
+            Turn (0° Front · ±180° Back)
           </label>
           <span>{filters.torso_yaw}°</span>
         </div>
@@ -436,7 +735,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
               checked={filters.use_torso_lean}
               onChange={(e) => onChange({ use_torso_lean: e.target.checked })}
             />
-            Filter Torso Lean
+            Lean (− Fwd / + Back)
           </label>
           <span>{filters.torso_lean}°</span>
         </div>

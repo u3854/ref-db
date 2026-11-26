@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CheckSquare,
   FolderCog,
+  Home,
   ImagePlus,
   Loader2,
   Search,
+  Sparkles,
   Tag,
   Trash2,
   Upload,
@@ -13,12 +15,13 @@ import {
 import { api } from "./api/client";
 import { FolderManagerModal } from "./components/FolderManagerModal";
 import { GalleryGrid } from "./components/GalleryGrid";
-import { LightboxModal } from "./components/LightboxModal";
+import { LightboxModal, type SimilarMode } from "./components/LightboxModal";
 import { PoseControls } from "./components/PoseControls";
 import type {
   FolderInfo,
   HealthResponse,
   IndexStatus,
+  LibraryStatsResponse,
   SearchMatch,
   SearchRequest,
   TagInfo,
@@ -26,6 +29,7 @@ import type {
 
 const INITIAL_FILTERS: SearchRequest = {
   query: "",
+  similar_to_image_id: null,
   folder_id: null,
   tag_ids: [],
   tag_mode: "all",
@@ -66,12 +70,19 @@ export function App() {
   const [totalIndexed, setTotalIndexed] = useState(0);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [searching, setSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [stats, setStats] = useState<LibraryStatsResponse | null>(null);
   const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [indexStatus, setIndexStatus] = useState<IndexStatus>(INITIAL_INDEX_STATUS);
+  const [similarAnchor, setSimilarAnchor] = useState<{
+    item: SearchMatch;
+    mode: SimilarMode;
+    subjectIndex: number;
+  } | null>(null);
 
   const [foldersModalOpen, setFoldersModalOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -85,11 +96,19 @@ export function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const filtersRef = useRef<SearchRequest>(filters);
   filtersRef.current = filters;
+  const hasSearchedRef = useRef(hasSearched);
+  hasSearchedRef.current = hasSearched;
 
   const refreshMeta = useCallback(async () => {
     try {
-      const [h, f, t] = await Promise.all([api.health(), api.listFolders(), api.listTags()]);
+      const [h, st, f, t] = await Promise.all([
+        api.health(),
+        api.stats(),
+        api.listFolders(),
+        api.listTags(),
+      ]);
       setHealth(h);
+      setStats(st);
       setFolders(f);
       setTags(t);
       setTotalIndexed(h.total_images);
@@ -99,6 +118,7 @@ export function App() {
   }, []);
 
   const runSearch = useCallback(async (req: SearchRequest) => {
+    setHasSearched(true);
     setSearching(true);
     setSearchError(null);
     try {
@@ -114,6 +134,60 @@ export function App() {
     }
   }, []);
 
+  const resetToOverview = useCallback(() => {
+    setFilters(INITIAL_FILTERS);
+    setSimilarAnchor(null);
+    setMatches([]);
+    setTotalMatches(0);
+    setElapsedMs(null);
+    setSearchError(null);
+    setHasSearched(false);
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+    refreshMeta();
+  }, [refreshMeta]);
+
+  const handleFindSimilar = useCallback(
+    (item: SearchMatch, mode: SimilarMode, subjectIndex = 0) => {
+      const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+      const subj = item.poses.subjects[subjectIndex] ?? item.poses.subjects[0];
+      const head = subj?.head ?? item.poses.heads[subjectIndex] ?? item.poses.heads[0] ?? null;
+      const torso =
+        subj?.torso ?? item.poses.torsos[subjectIndex] ?? item.poses.torsos[0] ?? null;
+
+      const useHead =
+        Boolean(head) && (mode === "head" || mode === "full_pose" || mode === "visual_and_pose");
+      const useTorso =
+        Boolean(torso) &&
+        (mode === "torso" || mode === "full_pose" || mode === "visual_and_pose");
+      const useVisual = mode === "visual" || mode === "visual_and_pose";
+
+      const nextFilters: SearchRequest = {
+        ...filtersRef.current,
+        query: "",
+        similar_to_image_id: useVisual ? item.id : null,
+        use_head_yaw: useHead,
+        use_head_pitch: useHead,
+        head_yaw: head ? clamp(Math.round(head.yaw), -90, 90) : filtersRef.current.head_yaw,
+        head_pitch: head ? clamp(Math.round(head.pitch), -60, 60) : filtersRef.current.head_pitch,
+        use_torso_yaw: useTorso,
+        use_torso_lean: useTorso,
+        torso_yaw: torso
+          ? clamp(Math.round(torso.yaw), -180, 180)
+          : filtersRef.current.torso_yaw,
+        torso_lean: torso
+          ? clamp(Math.round(torso.lean), -60, 60)
+          : filtersRef.current.torso_lean,
+      };
+
+      setFilters(nextFilters);
+      setSimilarAnchor({ item, mode, subjectIndex });
+      setLightboxIndex(null);
+      runSearch(nextFilters);
+    },
+    [runSearch]
+  );
+
   const handleImportFiles = useCallback(
     async (files: File[], sourceType: "upload" | "paste") => {
       const imageFiles = files.filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp|bmp)$/i.test(f.name));
@@ -128,7 +202,9 @@ export function App() {
         if (res.errors > 0) parts.push(`${res.errors} failed`);
         setToast(parts.join(" · "));
         await refreshMeta();
-        await runSearch(filtersRef.current);
+        if (hasSearchedRef.current) {
+          await runSearch(filtersRef.current);
+        }
       } catch (err) {
         setToast(err instanceof Error ? err.message : "Import failed");
       } finally {
@@ -140,8 +216,7 @@ export function App() {
 
   useEffect(() => {
     refreshMeta();
-    runSearch(INITIAL_FILTERS);
-  }, [refreshMeta, runSearch]);
+  }, [refreshMeta]);
 
   // Global clipboard image paste (Ctrl+V from X, Pinterest, Snipping Tool, etc.)
   useEffect(() => {
@@ -211,7 +286,9 @@ export function App() {
         setIndexStatus(parsed);
         if (!parsed.running && (parsed.phase === "done" || parsed.phase === "cancelled")) {
           refreshMeta();
-          runSearch(filtersRef.current);
+          if (hasSearchedRef.current) {
+            runSearch(filtersRef.current);
+          }
         }
       } catch {
         // Ignore keep-alive parse errors
@@ -477,12 +554,122 @@ export function App() {
           <span>
             {searchError ? (
               <span style={{ color: "var(--danger)" }}>{searchError}</span>
-            ) : (
+            ) : hasSearched ? (
               `Showing ${matches.length} of ${totalMatches} matches (${totalIndexed} stored)`
+            ) : (
+              `Library overview · ${totalIndexed} references ready`
             )}
           </span>
-          {elapsedMs !== null && <span>{elapsedMs.toFixed(1)} ms</span>}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {elapsedMs !== null && hasSearched && <span>{elapsedMs.toFixed(1)} ms</span>}
+            {hasSearched && (
+              <button type="button" className="btn btn-sm" onClick={resetToOverview}>
+                <Home size={12} />
+                Summary
+              </button>
+            )}
+          </div>
         </div>
+
+        {similarAnchor && (
+          <div className="anchor-banner">
+            <img
+              src={similarAnchor.item.thumb_url}
+              alt={similarAnchor.item.filename}
+              className="anchor-thumb"
+            />
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
+                <Sparkles size={13} color="#5b8cff" />
+                Finding similar to: {similarAnchor.item.filename}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                Switch similarity mode in 1 click:
+              </span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginLeft: "auto" }}>
+              <button
+                type="button"
+                className={`btn btn-sm ${similarAnchor.mode === "visual" ? "btn-primary" : ""}`}
+                onClick={() =>
+                  handleFindSimilar(similarAnchor.item, "visual", similarAnchor.subjectIndex)
+                }
+              >
+                Visual / Semantics
+              </button>
+              {(similarAnchor.item.poses.subjects[similarAnchor.subjectIndex]?.head ||
+                similarAnchor.item.poses.heads[0]) && (
+                <button
+                  type="button"
+                  className={`btn btn-sm ${similarAnchor.mode === "head" ? "btn-primary" : ""}`}
+                  onClick={() =>
+                    handleFindSimilar(similarAnchor.item, "head", similarAnchor.subjectIndex)
+                  }
+                >
+                  Head Angle
+                </button>
+              )}
+              {(similarAnchor.item.poses.subjects[similarAnchor.subjectIndex]?.torso ||
+                similarAnchor.item.poses.torsos[0]) && (
+                <button
+                  type="button"
+                  className={`btn btn-sm ${similarAnchor.mode === "torso" ? "btn-primary" : ""}`}
+                  onClick={() =>
+                    handleFindSimilar(similarAnchor.item, "torso", similarAnchor.subjectIndex)
+                  }
+                >
+                  Torso Angle
+                </button>
+              )}
+              {(similarAnchor.item.poses.subjects[similarAnchor.subjectIndex]?.head ||
+                similarAnchor.item.poses.heads[0]) &&
+                (similarAnchor.item.poses.subjects[similarAnchor.subjectIndex]?.torso ||
+                  similarAnchor.item.poses.torsos[0]) && (
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${similarAnchor.mode === "full_pose" ? "btn-primary" : ""}`}
+                    onClick={() =>
+                      handleFindSimilar(
+                        similarAnchor.item,
+                        "full_pose",
+                        similarAnchor.subjectIndex
+                      )
+                    }
+                  >
+                    Full Pose
+                  </button>
+                )}
+              {(similarAnchor.item.poses.heads[0] || similarAnchor.item.poses.torsos[0]) && (
+                <button
+                  type="button"
+                  className={`btn btn-sm ${similarAnchor.mode === "visual_and_pose" ? "btn-primary" : ""}`}
+                  onClick={() =>
+                    handleFindSimilar(
+                      similarAnchor.item,
+                      "visual_and_pose",
+                      similarAnchor.subjectIndex
+                    )
+                  }
+                >
+                  Visual + Pose
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => {
+                  const next = { ...filters, similar_to_image_id: null };
+                  setSimilarAnchor(null);
+                  setFilters(next);
+                  runSearch(next);
+                }}
+                title="Clear reference anchor"
+              >
+                <X size={13} /> Clear
+              </button>
+            </div>
+          </div>
+        )}
 
         {toast && (
           <div className="toast-banner">
@@ -496,12 +683,45 @@ export function App() {
         <div className="gallery-scroll">
           <GalleryGrid
             matches={matches}
+            hasSearched={hasSearched}
             totalIndexed={totalIndexed}
             loading={searching}
+            stats={stats}
+            tags={tags}
+            folders={folders}
             selectionMode={selectionMode}
             selectedIds={selectedIds}
             onToggleSelect={toggleSelectImage}
             onSelect={(idx) => setLightboxIndex(idx)}
+            onFindSimilarVisual={(item) => handleFindSimilar(item, "visual", 0)}
+            onBrowseAll={() => {
+              setSimilarAnchor(null);
+              const next = { ...filters, similar_to_image_id: null };
+              setFilters(next);
+              runSearch(next);
+            }}
+            onQuickTagSearch={(tagId) => {
+              setSimilarAnchor(null);
+              const next = { ...INITIAL_FILTERS, tag_ids: [tagId] };
+              setFilters(next);
+              runSearch(next);
+            }}
+            onQuickPoseSearch={(preset) => {
+              setSimilarAnchor(null);
+              let patch: Partial<SearchRequest> = {};
+              if (preset === "front") {
+                patch = { use_head_yaw: true, head_yaw: 0, use_torso_yaw: true, torso_yaw: 0 };
+              } else if (preset === "3q_left") {
+                patch = { use_head_yaw: true, head_yaw: -35, use_torso_yaw: true, torso_yaw: -35 };
+              } else if (preset === "3q_right") {
+                patch = { use_head_yaw: true, head_yaw: 35, use_torso_yaw: true, torso_yaw: 35 };
+              } else if (preset === "back") {
+                patch = { use_torso_yaw: true, torso_yaw: 180 };
+              }
+              const next = { ...INITIAL_FILTERS, ...patch };
+              setFilters(next);
+              runSearch(next);
+            }}
             onOpenFolders={() => setFoldersModalOpen(true)}
           />
         </div>
@@ -588,13 +808,14 @@ export function App() {
         allTags={tags}
         onTagsUpdated={() => {
           refreshMeta();
-          runSearch(filters);
+          if (hasSearchedRef.current) runSearch(filters);
         }}
         onDeleted={() => {
           setToast("Deleted reference from ref-db");
           refreshMeta();
-          runSearch(filters);
+          if (hasSearchedRef.current) runSearch(filters);
         }}
+        onFindSimilar={handleFindSimilar}
         onClose={() => setLightboxIndex(null)}
         onNavigate={(nextIdx) => setLightboxIndex(nextIdx)}
       />
@@ -605,7 +826,7 @@ export function App() {
         onClose={() => setFoldersModalOpen(false)}
         onLibraryChanged={() => {
           refreshMeta();
-          runSearch(filters);
+          if (hasSearchedRef.current) runSearch(filters);
         }}
       />
     </div>

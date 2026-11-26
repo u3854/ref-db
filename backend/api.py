@@ -9,6 +9,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -30,6 +31,7 @@ from backend.schemas import (
     ImportResponse,
     IndexStartRequest,
     IndexStatus,
+    LibraryStatsResponse,
     SearchRequest,
     SearchResponse,
     TagInfo,
@@ -124,11 +126,30 @@ def create_app(
             data_dir=str(cfg.data_dir.resolve()),
         )
 
+    @app.get("/api/stats", response_model=LibraryStatsResponse)
+    def get_library_stats() -> LibraryStatsResponse:
+        db_counts = db.get_storage_and_tag_counts()
+        idx_counts = search_index.get_summary_counts()
+        return LibraryStatsResponse(**db_counts, **idx_counts)
+
     @app.post("/api/search", response_model=SearchResponse)
     def search(req: SearchRequest) -> SearchResponse:
         query_text = req.query.strip()
         text_emb = ml_embedder.embed_text(query_text) if query_text else None
-        return search_index.search(req, text_emb)
+        anchor_emb: np.ndarray | None = None
+        if req.similar_to_image_id is not None:
+            anchor_emb = search_index.get_embedding(req.similar_to_image_id)
+            if anchor_emb is None:
+                raise HTTPException(status_code=404, detail="Anchor reference image not found")
+
+        if text_emb is not None and anchor_emb is not None:
+            blended = 0.5 * text_emb.astype(np.float32) + 0.5 * anchor_emb.astype(np.float32)
+            norm = float(np.linalg.norm(blended))
+            combined_emb = blended / max(norm, 1e-8)
+        else:
+            combined_emb = anchor_emb if anchor_emb is not None else text_emb
+
+        return search_index.search(req, combined_emb)
 
     @app.get("/api/images/{image_id}", response_model=ImageDetail)
     def get_image_detail(image_id: int) -> ImageDetail:

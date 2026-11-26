@@ -85,6 +85,7 @@ class Database:
                 """
             )
             self._migrate_images_if_needed(conn)
+            self._migrate_pose_signs_v2(conn)
             conn.executescript(
                 """
                 DROP INDEX IF EXISTS idx_images_content_hash;
@@ -140,6 +141,44 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_images_folder ON images(folder_id);
             CREATE INDEX IF NOT EXISTS idx_images_dhash ON images(dhash);
             PRAGMA foreign_keys=ON;
+            """
+        )
+
+    @staticmethod
+    def _migrate_pose_signs_v2(conn: sqlite3.Connection) -> None:
+        """
+        Migrate existing v1 head pose signs (inverted yaw/pitch) to v2 camera-aligned signs.
+        """
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'pose_version'"
+        ).fetchone()
+        if row is not None and row["value"] == "2":
+            return
+
+        img_rows = conn.execute("SELECT id, poses_json FROM images").fetchall()
+        updates: list[tuple[str, int]] = []
+        for ir in img_rows:
+            poses = json.loads(ir["poses_json"])
+            changed = False
+            for h in poses.get("heads", []):
+                h["yaw"] = round(-float(h["yaw"]), 1)
+                h["pitch"] = round(-float(h["pitch"]), 1)
+                changed = True
+            for subj in poses.get("subjects", []):
+                sh = subj.get("head")
+                if sh is not None:
+                    sh["yaw"] = round(-float(sh["yaw"]), 1)
+                    sh["pitch"] = round(-float(sh["pitch"]), 1)
+                    changed = True
+            if changed:
+                updates.append((json.dumps(poses), int(ir["id"])))
+
+        if updates:
+            conn.executemany("UPDATE images SET poses_json = ? WHERE id = ?", updates)
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value) VALUES ('pose_version', '2')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """
         )
 
@@ -427,6 +466,20 @@ class Database:
             img_count = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
             folder_count = conn.execute("SELECT COUNT(*) FROM folders").fetchone()[0]
         return int(img_count), int(folder_count)
+
+    def get_storage_and_tag_counts(self) -> dict[str, int]:
+        with self.connect() as conn:
+            img_count, total_bytes = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM images"
+            ).fetchone()
+            folder_count = conn.execute("SELECT COUNT(*) FROM folders").fetchone()[0]
+            tag_count = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+        return {
+            "total_images": int(img_count),
+            "total_folders": int(folder_count),
+            "total_tags": int(tag_count),
+            "storage_bytes": int(total_bytes),
+        }
 
     # ------------------------------------------------------------------
     # Tag CRUD

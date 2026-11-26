@@ -35,6 +35,7 @@ export interface TagInfo {
 
 export interface SearchRequest {
   query: string;
+  similar_to_image_id?: number | null;
   folder_id: number | null;
   tag_ids: number[];
   tag_mode: "all" | "any";
@@ -144,4 +145,17 @@ export interface HealthResponse {
   total_images: number;
   total_folders: number;
   image_max_edge: number;
+}
+
+export interface LibraryStatsResponse {
+  total_images: number;
+  total_folders: number;
+  total_tags: number;
+  images_with_head: number;
+  images_with_torso: number;
+  images_with_both: number;
+  untagged_images: number;
+  folder_source_count: number;
+  direct_import_count: number;
+  storage_bytes: number;
 }

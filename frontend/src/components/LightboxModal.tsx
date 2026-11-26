@@ -6,11 +6,14 @@ import {
   Copy,
   FileImage,
   Plus,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
 import { api } from "../api/client";
 import type { SearchMatch, TagInfo } from "../types/api";
+
+export type SimilarMode = "visual" | "head" | "torso" | "full_pose" | "visual_and_pose";
 
 interface LightboxModalProps {
   matches: SearchMatch[];
@@ -18,6 +21,7 @@ interface LightboxModalProps {
   allTags: TagInfo[];
   onTagsUpdated: () => void;
   onDeleted: () => void;
+  onFindSimilar: (item: SearchMatch, mode: SimilarMode, subjectIndex?: number) => void;
   onClose: () => void;
   onNavigate: (nextIndex: number) => void;
 }
@@ -28,6 +32,7 @@ export function LightboxModal({
   allTags,
   onTagsUpdated,
   onDeleted,
+  onFindSimilar,
   onClose,
   onNavigate,
 }: LightboxModalProps) {
@@ -69,6 +74,9 @@ export function LightboxModal({
   if (item === null || activeIndex === null) return null;
 
   const imgSrc = item.file_url;
+  const primarySubject = item.poses.subjects[0];
+  const primaryHead = primarySubject?.head ?? item.poses.heads[0] ?? null;
+  const primaryTorso = primarySubject?.torso ?? item.poses.torsos[0] ?? null;
 
   const saveTagsList = async (nextNames: string[]) => {
     setSavingTag(true);
@@ -220,6 +228,63 @@ export function LightboxModal({
           )}
 
           <div className="section-card">
+            <div className="section-header">
+              <span>Find Similar References</span>
+              <Sparkles size={13} color="#5b8cff" />
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => onFindSimilar(item, "visual", 0)}
+                title="Match style, lighting, subject, and composition semantically"
+              >
+                Visual / Semantics
+              </button>
+              {primaryHead && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onFindSimilar(item, "head", 0)}
+                  title="Search other refs with this exact Head yaw & pitch"
+                >
+                  Same Head
+                </button>
+              )}
+              {primaryTorso && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onFindSimilar(item, "torso", 0)}
+                  title="Search other refs with this exact Torso turn & lean"
+                >
+                  Same Torso
+                </button>
+              )}
+              {primaryHead && primaryTorso && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onFindSimilar(item, "full_pose", 0)}
+                  title="Search other refs matching both Head and Torso pose"
+                >
+                  Full Pose
+                </button>
+              )}
+              {(primaryHead || primaryTorso) && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onFindSimilar(item, "visual_and_pose", 0)}
+                  title="Combine semantic similarity with this pose"
+                >
+                  Visual + Pose
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="section-card">
             <div className="section-header">Custom Tags ({item.tags.length})</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {item.tags.length === 0 ? (
@@ -329,7 +394,41 @@ export function LightboxModal({
                     gap: 4,
                   }}
                 >
-                  <div style={{ fontWeight: 600 }}>Subject #{idx + 1}</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontWeight: 600 }}>Subject #{idx + 1}</span>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {subj.head && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ fontSize: 10, padding: "2px 6px" }}
+                          onClick={() => onFindSimilar(item, "head", idx)}
+                        >
+                          Head
+                        </button>
+                      )}
+                      {subj.torso && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ fontSize: 10, padding: "2px 6px" }}
+                          onClick={() => onFindSimilar(item, "torso", idx)}
+                        >
+                          Torso
+                        </button>
+                      )}
+                      {subj.head && subj.torso && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ fontSize: 10, padding: "2px 6px" }}
+                          onClick={() => onFindSimilar(item, "full_pose", idx)}
+                        >
+                          Pose
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <div style={{ color: "var(--text-secondary)" }}>
                     Head:{" "}
                     {subj.head

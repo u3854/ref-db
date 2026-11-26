@@ -133,15 +133,17 @@ class SearchIndex:
         self.db = db
         self._lock = threading.RLock()
         self._entries: list[_Entry] = []
+        self._id_to_idx: dict[int, int] = {}
         self._embeddings: np.ndarray | None = None
         self.reload()
 
     def reload(self) -> int:
         rows = self.db.load_all_for_index()
         entries: list[_Entry] = []
+        id_to_idx: dict[int, int] = {}
         vecs: list[np.ndarray] = []
 
-        for r in rows:
+        for idx, r in enumerate(rows):
             vec = np.frombuffer(r["embedding"], dtype=np.float32)
             tags = r.get("tags", [])
             entries.append(
@@ -160,14 +162,56 @@ class SearchIndex:
                     tag_ids=frozenset(t["id"] for t in tags),
                 )
             )
+            id_to_idx[r["id"]] = idx
             vecs.append(vec)
 
         matrix = np.vstack(vecs).astype(np.float32, copy=False) if vecs else None
 
         with self._lock:
             self._entries = entries
+            self._id_to_idx = id_to_idx
             self._embeddings = matrix
             return len(entries)
+
+    def get_embedding(self, image_id: int) -> np.ndarray | None:
+        with self._lock:
+            idx = self._id_to_idx.get(image_id)
+            if idx is None or self._embeddings is None:
+                return None
+            return self._embeddings[idx].copy()
+
+    def get_summary_counts(self) -> dict[str, int]:
+        with self._lock:
+            entries = list(self._entries)
+        with_head = 0
+        with_torso = 0
+        with_both = 0
+        untagged = 0
+        folder_src = 0
+        direct_src = 0
+        for e in entries:
+            has_h = bool(e.poses.get("heads"))
+            has_t = bool(e.poses.get("torsos"))
+            if has_h:
+                with_head += 1
+            if has_t:
+                with_torso += 1
+            if has_h and has_t:
+                with_both += 1
+            if not e.tag_ids:
+                untagged += 1
+            if e.source_type == "folder":
+                folder_src += 1
+            else:
+                direct_src += 1
+        return {
+            "images_with_head": with_head,
+            "images_with_torso": with_torso,
+            "images_with_both": with_both,
+            "untagged_images": untagged,
+            "folder_source_count": folder_src,
+            "direct_import_count": direct_src,
+        }
 
     @property
     def count(self) -> int:
@@ -226,6 +270,8 @@ class SearchIndex:
         req_tag_ids = set(req.tag_ids)
         candidates: list[tuple[float, _Entry, float, float]] = []
         for idx, entry in enumerate(entries):
+            if req.similar_to_image_id is not None and entry.id == req.similar_to_image_id:
+                continue
             if req.folder_id is not None and entry.folder_id != req.folder_id:
                 continue
 

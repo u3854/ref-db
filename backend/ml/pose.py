@@ -36,6 +36,56 @@ def rotation_matrix_to_euler(R: np.ndarray) -> tuple[float, float, float]:
     )
 
 
+def face_matrix_to_angles(R: np.ndarray) -> tuple[float, float, float]:
+    """
+    Extract intuitive artist-space head angles (yaw, pitch, roll) in degrees
+    from MediaPipe's facial transformation rotation matrix R.
+
+    In camera space (+X viewer right, +Y up, +Z toward camera), the face forward
+    axis is R @ [0, 0, 1]:
+      - yaw:   -90 (viewer's left) .. +90 (viewer's right)
+      - pitch: -60 (looking down) .. +60 (looking up)
+      - roll:  -90 .. +90
+    """
+    fwd = R @ np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    fx, fy, fz = float(fwd[0]), float(fwd[1]), float(fwd[2])
+    yaw = math.degrees(math.atan2(fx, fz))
+    pitch = math.degrees(math.atan2(fy, math.hypot(fx, fz)))
+    _, _, roll = rotation_matrix_to_euler(R)
+    return (
+        round(float(np.clip(yaw, -90.0, 90.0)), 1),
+        round(float(np.clip(pitch, -60.0, 60.0)), 1),
+        round(float(np.clip(roll, -90.0, 90.0)), 1),
+    )
+
+
+def torso_landmarks_to_angles(l_sh, r_sh, l_hip, r_hip) -> tuple[float, float]:
+    """
+    Extract (yaw, lean) in degrees from MediaPipe 3D pose world landmarks.
+
+    Conventions:
+      - torso.yaw:  -180..+180 (0 = front facing viewer, -90 = facing viewer's left,
+                                +90 = facing viewer's right, +-180 = back view)
+      - torso.lean: -60..+60 (- = leaning toward camera/forward, + = leaning away/back)
+    """
+    dx = float(l_sh.x - r_sh.x)
+    dz = float(l_sh.z - r_sh.z)
+    torso_yaw = math.degrees(math.atan2(dz, dx))
+
+    mid_sh_y = 0.5 * (float(l_sh.y) + float(r_sh.y))
+    mid_sh_z = 0.5 * (float(l_sh.z) + float(r_sh.z))
+    mid_hip_y = 0.5 * (float(l_hip.y) + float(r_hip.y))
+    mid_hip_z = 0.5 * (float(l_hip.z) + float(r_hip.z))
+
+    dy_up = mid_hip_y - mid_sh_y
+    dz_back = mid_sh_z - mid_hip_z
+    torso_lean = math.degrees(math.atan2(dz_back, max(abs(dy_up), 1e-4)))
+    return (
+        round(float(torso_yaw), 1),
+        round(float(np.clip(torso_lean, -60.0, 60.0)), 1),
+    )
+
+
 def ensure_mediapipe_models(cfg: Settings = settings) -> tuple[Path, Path]:
     """Ensure MediaPipe .task models are cached inside the project .models directory."""
     cfg.ensure_dirs_and_env()
@@ -136,7 +186,7 @@ def extract_poses_from_rgb(
         face_lms_list = getattr(face_res, "face_landmarks", []) or []
         for idx, mat in enumerate(face_res.facial_transformation_matrixes):
             R = np.array(mat, dtype=np.float64).reshape(4, 4)[:3, :3]
-            pitch, yaw, roll = rotation_matrix_to_euler(R)
+            yaw, pitch, roll = face_matrix_to_angles(R)
             cx, cy, size = (
                 _bbox_from_landmarks(face_lms_list[idx])
                 if idx < len(face_lms_list)
@@ -144,9 +194,9 @@ def extract_poses_from_rgb(
             )
             heads.append(
                 {
-                    "yaw": round(float(np.clip(-yaw, -90.0, 90.0)), 1),
-                    "pitch": round(float(np.clip(pitch, -60.0, 60.0)), 1),
-                    "roll": round(float(np.clip(roll, -90.0, 90.0)), 1),
+                    "yaw": yaw,
+                    "pitch": pitch,
+                    "roll": roll,
                     "cx": cx,
                     "cy": cy,
                     "size": size,
@@ -159,19 +209,7 @@ def extract_poses_from_rgb(
         for idx, w_lms in enumerate(pose_res.pose_world_landmarks):
             l_sh, r_sh = w_lms[11], w_lms[12]
             l_hip, r_hip = w_lms[23], w_lms[24]
-
-            dx = l_sh.x - r_sh.x
-            dz = l_sh.z - r_sh.z
-            torso_yaw = math.degrees(math.atan2(dz, dx))
-
-            mid_sh_y = 0.5 * (l_sh.y + r_sh.y)
-            mid_sh_z = 0.5 * (l_sh.z + r_sh.z)
-            mid_hip_y = 0.5 * (l_hip.y + r_hip.y)
-            mid_hip_z = 0.5 * (l_hip.z + r_hip.z)
-
-            dy_up = mid_hip_y - mid_sh_y
-            dz_back = mid_sh_z - mid_hip_z
-            torso_lean = math.degrees(math.atan2(dz_back, max(abs(dy_up), 1e-4)))
+            torso_yaw, torso_lean = torso_landmarks_to_angles(l_sh, r_sh, l_hip, r_hip)
 
             if idx < len(norm_lms_list):
                 n_lms = norm_lms_list[idx]
@@ -187,8 +225,8 @@ def extract_poses_from_rgb(
 
             torsos.append(
                 {
-                    "yaw": round(float(torso_yaw), 1),
-                    "lean": round(float(np.clip(torso_lean, -60.0, 60.0)), 1),
+                    "yaw": torso_yaw,
+                    "lean": torso_lean,
                     "cx": cx,
                     "cy": cy,
                     "span": span,

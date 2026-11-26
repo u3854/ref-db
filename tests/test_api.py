@@ -165,6 +165,19 @@ def test_api_self_contained_storage_import_and_delete(tmp_path: Path):
         assert len(imp3.json()["imported"]) == 0
         assert imp3.json()["skipped_duplicates"] == 1
 
+        # Check /api/stats summary endpoint and similar_to_image_id search
+        stats_res = client.get("/api/stats")
+        assert stats_res.status_code == 200
+        stats_body = stats_res.json()
+        assert stats_body["total_images"] == 2
+        assert stats_body["direct_import_count"] == 1
+
+        sim_res = client.post("/api/search", json={"similar_to_image_id": image_id})
+        assert sim_res.status_code == 200
+        sim_matches = sim_res.json()["matches"]
+        assert len(sim_matches) == 1
+        assert sim_matches[0]["id"] == new_id
+
         # Delete single image permanently removes DB row, stored .jpg, and .webp
         del_img = client.delete(f"/api/images/{new_id}")
         assert del_img.status_code == 200
