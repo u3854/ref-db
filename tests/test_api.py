@@ -133,7 +133,7 @@ def test_api_self_contained_storage_import_and_delete(tmp_path: Path):
         imp1 = client.post(
             "/api/images/import",
             files={"files": ("pasted.png", up_bytes, "image/png")},
-            data={"source_type": "paste"},
+            data={"source_type": "paste", "tags": json.dumps(["Character A", "Lighting"])},
         )
         assert imp1.status_code == 200
         body1 = imp1.json()
@@ -141,6 +141,7 @@ def test_api_self_contained_storage_import_and_delete(tmp_path: Path):
         assert body1["imported"][0]["width"] == 1920
         assert body1["imported"][0]["height"] == 960
         assert body1["imported"][0]["source_type"] == "paste"
+        assert {t["name"] for t in body1["imported"][0]["tags"]} == {"Character A", "Lighting"}
         new_id = body1["imported"][0]["id"]
 
         # Re-importing same bytes deduplicates cleanly

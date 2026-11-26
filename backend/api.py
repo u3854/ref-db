@@ -178,7 +178,20 @@ def create_app(
     async def import_images(
         files: list[UploadFile] = File(...),
         source_type: str = Form(default="upload"),
+        tags: str = Form(default="[]"),
     ) -> ImportResponse:
+        parsed_tags: list[str] = []
+        raw_tags = tags.strip()
+        if raw_tags:
+            try:
+                decoded = json.loads(raw_tags)
+                if isinstance(decoded, list):
+                    parsed_tags = [str(t) for t in decoded if str(t).strip()]
+                elif isinstance(decoded, str) and decoded.strip():
+                    parsed_tags = [decoded.strip()]
+            except json.JSONDecodeError:
+                parsed_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+
         payloads: list[tuple[str, bytes]] = []
         for f in files:
             data = await f.read()
@@ -189,6 +202,14 @@ def create_app(
             payloads,
             source_type,
         )
+        if parsed_tags and result["imported_ids"]:
+            db.batch_modify_tags(
+                image_ids=result["imported_ids"],
+                add_tags=parsed_tags,
+                remove_tags=[],
+            )
+            search_index.reload()
+
         imported_details: list[ImageDetail] = []
         for img_id in result["imported_ids"]:
             row = db.get_image_by_id(img_id)

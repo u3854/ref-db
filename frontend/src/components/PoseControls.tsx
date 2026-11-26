@@ -69,8 +69,49 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
   const torsoFrontSvgRef = useRef<SVGSVGElement | null>(null);
   const torsoDialSvgRef = useRef<SVGSVGElement | null>(null);
 
-  const headActive = filters.use_head_yaw || filters.use_head_pitch;
-  const torsoActive = filters.use_torso_yaw || filters.use_torso_lean;
+  const headPresence = filters.head_presence ?? "any";
+  const torsoPresence = filters.torso_presence ?? "any";
+  const headActive =
+    headPresence !== "exclude" &&
+    (headPresence === "require" || filters.use_head_yaw || filters.use_head_pitch);
+  const torsoActive =
+    torsoPresence !== "exclude" &&
+    (torsoPresence === "require" || filters.use_torso_yaw || filters.use_torso_lean);
+
+  const headMode: "off" | "include" | "exclude" =
+    headPresence === "exclude" ? "exclude" : headActive ? "include" : "off";
+  const torsoMode: "off" | "include" | "exclude" =
+    torsoPresence === "exclude" ? "exclude" : torsoActive ? "include" : "off";
+
+  const setHeadMode = (mode: "off" | "include" | "exclude") => {
+    if (mode === "off") {
+      onChange({ head_presence: "any", use_head_yaw: false, use_head_pitch: false });
+    } else if (mode === "exclude") {
+      onChange({ head_presence: "exclude", use_head_yaw: false, use_head_pitch: false });
+    } else {
+      onChange({
+        head_presence: "require",
+        use_head_yaw: filters.use_head_yaw || filters.use_head_pitch ? filters.use_head_yaw : true,
+        use_head_pitch: filters.use_head_yaw || filters.use_head_pitch ? filters.use_head_pitch : true,
+      });
+    }
+  };
+
+  const setTorsoMode = (mode: "off" | "include" | "exclude") => {
+    if (mode === "off") {
+      onChange({ torso_presence: "any", use_torso_yaw: false, use_torso_lean: false });
+    } else if (mode === "exclude") {
+      onChange({ torso_presence: "exclude", use_torso_yaw: false, use_torso_lean: false });
+    } else {
+      onChange({
+        torso_presence: "require",
+        use_torso_yaw:
+          filters.use_torso_yaw || filters.use_torso_lean ? filters.use_torso_yaw : true,
+        use_torso_lean:
+          filters.use_torso_yaw || filters.use_torso_lean ? filters.use_torso_lean : false,
+      });
+    }
+  };
 
   const updateHeadFromPointer = (clientX: number, clientY: number) => {
     const svg = headSvgRef.current;
@@ -82,6 +123,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
     const yaw = snap((nx - 0.5) * 180, 5);
     const pitch = snap((0.5 - ny) * 120, 5);
     onChange({
+      head_presence: "require",
       use_head_yaw: true,
       use_head_pitch: true,
       head_yaw: clamp(yaw, -90, 90),
@@ -102,6 +144,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
     }
     const nextLean = snap((0.5 - ny) * 120, 5);
     onChange({
+      torso_presence: "require",
       use_torso_yaw: true,
       use_torso_lean: true,
       torso_yaw: clamp(nextYaw, -180, 180),
@@ -120,6 +163,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
     // Bottom (camera side) = 0 deg (Front); Left = -90 deg; Right = +90 deg; Top = +-180 deg (Back)
     const deg = snap((Math.atan2(dx, dy) * 180) / Math.PI, 5);
     onChange({
+      torso_presence: "require",
       use_torso_yaw: true,
       torso_yaw: clamp(deg, -180, 180),
     });
@@ -144,7 +188,11 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
   const toggleFrontBack = () => {
     const y = filters.torso_yaw;
     const flipped = y >= 0 ? 180 - y : -180 - y;
-    onChange({ use_torso_yaw: true, torso_yaw: clamp(Math.round(flipped), -180, 180) });
+    onChange({
+      torso_presence: "require",
+      use_torso_yaw: true,
+      torso_yaw: clamp(Math.round(flipped), -180, 180),
+    });
   };
 
   // --- Head 3D sphere projection ---
@@ -199,6 +247,8 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             className="btn btn-sm"
             onClick={() =>
               onChange({
+                head_presence: "any",
+                torso_presence: "any",
                 use_head_yaw: false,
                 use_head_pitch: false,
                 use_torso_yaw: false,
@@ -216,6 +266,8 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             className="btn btn-sm"
             onClick={() =>
               onChange({
+                head_presence: "require",
+                torso_presence: "require",
                 use_head_yaw: true,
                 head_yaw: 0,
                 use_head_pitch: false,
@@ -232,6 +284,8 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             className="btn btn-sm"
             onClick={() =>
               onChange({
+                head_presence: "require",
+                torso_presence: "require",
                 use_head_yaw: true,
                 head_yaw: -35,
                 use_head_pitch: false,
@@ -248,6 +302,8 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             className="btn btn-sm"
             onClick={() =>
               onChange({
+                head_presence: "require",
+                torso_presence: "require",
                 use_head_yaw: true,
                 head_yaw: 35,
                 use_head_pitch: false,
@@ -264,6 +320,8 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             className="btn btn-sm"
             onClick={() =>
               onChange({
+                head_presence: "require",
+                torso_presence: "require",
                 use_head_yaw: true,
                 head_yaw: -75,
                 use_head_pitch: false,
@@ -280,6 +338,8 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             className="btn btn-sm"
             onClick={() =>
               onChange({
+                head_presence: "require",
+                torso_presence: "require",
                 use_head_yaw: true,
                 head_yaw: 75,
                 use_head_pitch: false,
@@ -296,6 +356,8 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             className="btn btn-sm"
             onClick={() =>
               onChange({
+                head_presence: "any",
+                torso_presence: "require",
                 use_head_yaw: false,
                 use_head_pitch: false,
                 use_torso_yaw: true,
@@ -328,18 +390,39 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
       <div className="section-card">
         <div className="section-header">
           <span>Head Angle</span>
-          <span
-            style={{
-              color: headActive ? "var(--accent-hover)" : "var(--text-muted)",
-              textTransform: "none",
-              letterSpacing: 0,
-              fontSize: 11,
-            }}
-          >
-            {describeHead(filters.head_yaw, filters.head_pitch, headActive)}
-          </span>
+          <div className="segmented-group" title="Control whether Head is included, ignored, or excluded from search">
+            <button
+              type="button"
+              className={`segmented-btn ${headMode === "off" ? "active" : ""}`}
+              onClick={() => setHeadMode("off")}
+            >
+              Off
+            </button>
+            <button
+              type="button"
+              className={`segmented-btn ${headMode === "include" ? "active" : ""}`}
+              onClick={() => setHeadMode("include")}
+            >
+              Include
+            </button>
+            <button
+              type="button"
+              className={`segmented-btn ${headMode === "exclude" ? "active-danger" : ""}`}
+              onClick={() => setHeadMode("exclude")}
+              title="Only show images without a detected head/face"
+            >
+              Exclude
+            </button>
+          </div>
         </div>
 
+        <div style={{ fontSize: 11, color: headMode === "exclude" ? "var(--danger)" : headActive ? "var(--accent-hover)" : "var(--text-muted)" }}>
+          {headMode === "exclude"
+            ? "Excluding images with a detected head/face"
+            : describeHead(filters.head_yaw, filters.head_pitch, headActive)}
+        </div>
+
+        <div className={headMode !== "include" ? "pose-body-dimmed" : ""} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div className="pose-pad-wrap">
           <svg
             ref={headSvgRef}
@@ -437,7 +520,12 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             <input
               type="checkbox"
               checked={filters.use_head_yaw}
-              onChange={(e) => onChange({ use_head_yaw: e.target.checked })}
+              onChange={(e) =>
+                onChange({
+                  use_head_yaw: e.target.checked,
+                  head_presence: e.target.checked || filters.use_head_pitch ? "require" : "any",
+                })
+              }
             />
             Turn (Yaw)
           </label>
@@ -450,7 +538,11 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
           step={5}
           value={filters.head_yaw}
           onChange={(e) =>
-            onChange({ use_head_yaw: true, head_yaw: Number(e.target.value) })
+            onChange({
+              head_presence: "require",
+              use_head_yaw: true,
+              head_yaw: Number(e.target.value),
+            })
           }
         />
 
@@ -459,7 +551,12 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             <input
               type="checkbox"
               checked={filters.use_head_pitch}
-              onChange={(e) => onChange({ use_head_pitch: e.target.checked })}
+              onChange={(e) =>
+                onChange({
+                  use_head_pitch: e.target.checked,
+                  head_presence: filters.use_head_yaw || e.target.checked ? "require" : "any",
+                })
+              }
             />
             Tilt (Pitch)
           </label>
@@ -472,7 +569,11 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
           step={5}
           value={filters.head_pitch}
           onChange={(e) =>
-            onChange({ use_head_pitch: true, head_pitch: Number(e.target.value) })
+            onChange({
+              head_presence: "require",
+              use_head_pitch: true,
+              head_pitch: Number(e.target.value),
+            })
           }
         />
 
@@ -490,24 +591,46 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             onChange={(e) => onChange({ head_tol: Number(e.target.value) })}
           />
         </div>
+        </div>
       </div>
 
       {/* Torso Orientation: Synchronized 3D Front Mannequin + 360° Overhead Dial */}
       <div className="section-card">
         <div className="section-header">
-          <span>Torso Angle (360°)</span>
-          <span
-            style={{
-              color: torsoActive ? "var(--accent-hover)" : "var(--text-muted)",
-              textTransform: "none",
-              letterSpacing: 0,
-              fontSize: 11,
-            }}
-          >
-            {describeTorso(filters.torso_yaw, filters.torso_lean, torsoActive)}
-          </span>
+          <span>Torso Angle</span>
+          <div className="segmented-group" title="Control whether Torso is included, ignored, or excluded from search">
+            <button
+              type="button"
+              className={`segmented-btn ${torsoMode === "off" ? "active" : ""}`}
+              onClick={() => setTorsoMode("off")}
+            >
+              Off
+            </button>
+            <button
+              type="button"
+              className={`segmented-btn ${torsoMode === "include" ? "active" : ""}`}
+              onClick={() => setTorsoMode("include")}
+            >
+              Include
+            </button>
+            <button
+              type="button"
+              className={`segmented-btn ${torsoMode === "exclude" ? "active-danger" : ""}`}
+              onClick={() => setTorsoMode("exclude")}
+              title="Only show images without a detected torso"
+            >
+              Exclude
+            </button>
+          </div>
         </div>
 
+        <div style={{ fontSize: 11, color: torsoMode === "exclude" ? "var(--danger)" : torsoActive ? "var(--accent-hover)" : "var(--text-muted)" }}>
+          {torsoMode === "exclude"
+            ? "Excluding images with a detected torso"
+            : describeTorso(filters.torso_yaw, filters.torso_lean, torsoActive)}
+        </div>
+
+        <div className={torsoMode !== "include" ? "pose-body-dimmed" : ""} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div className="torso-dual-wrap">
           {/* Left: Camera-view 3D Mannequin (Turn + Lean) */}
           <div className="torso-pane">
@@ -711,7 +834,13 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             <input
               type="checkbox"
               checked={filters.use_torso_yaw}
-              onChange={(e) => onChange({ use_torso_yaw: e.target.checked })}
+              onChange={(e) =>
+                onChange({
+                  use_torso_yaw: e.target.checked,
+                  torso_presence:
+                    e.target.checked || filters.use_torso_lean ? "require" : "any",
+                })
+              }
             />
             Turn (0° Front · ±180° Back)
           </label>
@@ -724,7 +853,11 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
           step={5}
           value={filters.torso_yaw}
           onChange={(e) =>
-            onChange({ use_torso_yaw: true, torso_yaw: Number(e.target.value) })
+            onChange({
+              torso_presence: "require",
+              use_torso_yaw: true,
+              torso_yaw: Number(e.target.value),
+            })
           }
         />
 
@@ -733,7 +866,13 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             <input
               type="checkbox"
               checked={filters.use_torso_lean}
-              onChange={(e) => onChange({ use_torso_lean: e.target.checked })}
+              onChange={(e) =>
+                onChange({
+                  use_torso_lean: e.target.checked,
+                  torso_presence:
+                    filters.use_torso_yaw || e.target.checked ? "require" : "any",
+                })
+              }
             />
             Lean (− Fwd / + Back)
           </label>
@@ -746,7 +885,11 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
           step={5}
           value={filters.torso_lean}
           onChange={(e) =>
-            onChange({ use_torso_lean: true, torso_lean: Number(e.target.value) })
+            onChange({
+              torso_presence: "require",
+              use_torso_lean: true,
+              torso_lean: Number(e.target.value),
+            })
           }
         />
 
@@ -763,6 +906,7 @@ export function PoseControls({ filters, onChange }: PoseControlsProps) {
             value={filters.torso_tol}
             onChange={(e) => onChange({ torso_tol: Number(e.target.value) })}
           />
+        </div>
         </div>
       </div>
     </>

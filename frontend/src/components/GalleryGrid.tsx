@@ -20,7 +20,7 @@ interface GalleryGridProps {
   folders: FolderInfo[];
   selectionMode: boolean;
   selectedIds: Set<number>;
-  onToggleSelect: (id: number) => void;
+  onToggleSelect: (id: number, index: number, shiftKey: boolean) => void;
   onSelect: (index: number) => void;
   onFindSimilarVisual: (item: SearchMatch) => void;
   onBrowseAll: () => void;
@@ -224,9 +224,9 @@ export function GalleryGrid({
           <div
             key={item.id}
             className={`thumb-card ${isSelected ? "selected" : ""}`}
-            onClick={() => {
-              if (selectionMode) {
-                onToggleSelect(item.id);
+            onClick={(e) => {
+              if (selectionMode || e.shiftKey) {
+                onToggleSelect(item.id, idx, e.shiftKey);
               } else {
                 onSelect(idx);
               }
@@ -237,18 +237,25 @@ export function GalleryGrid({
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
                 if (selectionMode) {
-                  onToggleSelect(item.id);
+                  onToggleSelect(item.id, idx, e.shiftKey);
                 } else {
                   onSelect(idx);
                 }
               }
             }}
           >
-            {selectionMode ? (
-              <div className="thumb-select-badge">
-                {isSelected && <Check size={14} color="#5b8cff" />}
-              </div>
-            ) : (
+            <button
+              type="button"
+              className={`thumb-select-badge ${selectionMode || isSelected ? "" : "hover-reveal"}`}
+              title={selectionMode ? "Toggle selection (Shift+Click for range)" : "Select image"}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelect(item.id, idx, e.shiftKey);
+              }}
+            >
+              {isSelected && <Check size={14} color="#5b8cff" />}
+            </button>
+            {!selectionMode && (
               <button
                 type="button"
                 className="thumb-similar-btn"

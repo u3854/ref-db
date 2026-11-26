@@ -53,10 +53,12 @@ export const api = {
     }>(`/api/folders/${id}?delete_images=${deleteImages}`, { method: "DELETE" }),
   importImages: async (
     files: File[],
-    sourceType: "upload" | "paste" = "upload"
+    sourceType: "upload" | "paste" = "upload",
+    tags: string[] = []
   ): Promise<ImportResponse> => {
     const form = new FormData();
     form.append("source_type", sourceType);
+    form.append("tags", JSON.stringify(tags));
     for (const file of files) {
       form.append("files", file, file.name || "pasted-image.png");
     }

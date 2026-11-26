@@ -22,6 +22,7 @@ interface LightboxModalProps {
   onTagsUpdated: () => void;
   onDeleted: () => void;
   onFindSimilar: (item: SearchMatch, mode: SimilarMode, subjectIndex?: number) => void;
+  onFilterByTag?: (tagId: number) => void;
   onClose: () => void;
   onNavigate: (nextIndex: number) => void;
 }
@@ -33,6 +34,7 @@ export function LightboxModal({
   onTagsUpdated,
   onDeleted,
   onFindSimilar,
+  onFilterByTag,
   onClose,
   onNavigate,
 }: LightboxModalProps) {
@@ -295,7 +297,24 @@ export function LightboxModal({
                 item.tags.map((tag) => (
                   <span key={tag.id} className="tag-chip" style={{ borderColor: tag.color }}>
                     <span className="tag-dot" style={{ background: tag.color }} />
-                    <span>{tag.name}</span>
+                    {onFilterByTag ? (
+                      <button
+                        type="button"
+                        onClick={() => onFilterByTag(tag.id)}
+                        title={`Search references tagged "${tag.name}"`}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          cursor: "pointer",
+                          color: "inherit",
+                        }}
+                      >
+                        {tag.name}
+                      </button>
+                    ) : (
+                      <span>{tag.name}</span>
+                    )}
                     <button
                       type="button"
                       onClick={() => handleRemoveTag(tag.id)}

@@ -53,18 +53,27 @@ def _torso_error(torso: dict, req: SearchRequest) -> float | None:
 
 def evaluate_pose_match(poses: dict, req: SearchRequest) -> tuple[bool, float]:
     """
-    Evaluate whether an image's poses satisfy the active angle filters.
+    Evaluate whether an image's poses satisfy the active angle and presence filters.
     Returns (matched, pose_closeness_score in [0, 1]).
     """
-    need_head = req.use_head_yaw or req.use_head_pitch
-    need_torso = req.use_torso_yaw or req.use_torso_lean
-
-    if not need_head and not need_torso:
-        return True, 1.0
-
     heads = poses.get("heads", [])
     torsos = poses.get("torsos", [])
     subjects = poses.get("subjects", [])
+
+    if req.head_presence == "exclude" and heads:
+        return False, 0.0
+    if req.torso_presence == "exclude" and torsos:
+        return False, 0.0
+    if req.head_presence == "require" and not heads:
+        return False, 0.0
+    if req.torso_presence == "require" and not torsos:
+        return False, 0.0
+
+    need_head = req.head_presence != "exclude" and (req.use_head_yaw or req.use_head_pitch)
+    need_torso = req.torso_presence != "exclude" and (req.use_torso_yaw or req.use_torso_lean)
+
+    if not need_head and not need_torso:
+        return True, 1.0
 
     if req.match_mode == "paired" and need_head and need_torso and subjects:
         best_err: float | None = None

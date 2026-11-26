@@ -44,11 +44,13 @@ export interface SearchRequest {
   use_head_pitch: boolean;
   head_pitch: number;
   head_tol: number;
+  head_presence?: "any" | "require" | "exclude";
   use_torso_yaw: boolean;
   torso_yaw: number;
   use_torso_lean: boolean;
   torso_lean: number;
   torso_tol: number;
+  torso_presence?: "any" | "require" | "exclude";
   match_mode: "paired" | "independent";
   top_k: number;
 }

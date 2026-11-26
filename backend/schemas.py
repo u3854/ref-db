@@ -62,11 +62,13 @@ class SearchRequest(BaseModel):
     use_head_pitch: bool = False
     head_pitch: float = Field(default=0.0, ge=-60.0, le=60.0)
     head_tol: float = Field(default=20.0, ge=1.0, le=90.0)
+    head_presence: Literal["any", "require", "exclude"] = "any"
     use_torso_yaw: bool = False
     torso_yaw: float = Field(default=0.0, ge=-180.0, le=180.0)
     use_torso_lean: bool = False
     torso_lean: float = Field(default=0.0, ge=-60.0, le=60.0)
     torso_tol: float = Field(default=25.0, ge=1.0, le=180.0)
+    torso_presence: Literal["any", "require", "exclude"] = "any"
     match_mode: Literal["paired", "independent"] = "paired"
     top_k: int = Field(default=36, ge=1, le=200)
 

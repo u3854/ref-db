@@ -15,6 +15,7 @@ import {
 import { api } from "./api/client";
 import { FolderManagerModal } from "./components/FolderManagerModal";
 import { GalleryGrid } from "./components/GalleryGrid";
+import { ImportConfirmModal } from "./components/ImportConfirmModal";
 import { LightboxModal, type SimilarMode } from "./components/LightboxModal";
 import { PoseControls } from "./components/PoseControls";
 import type {
@@ -38,11 +39,13 @@ const INITIAL_FILTERS: SearchRequest = {
   use_head_pitch: false,
   head_pitch: 0,
   head_tol: 20,
+  head_presence: "any",
   use_torso_yaw: false,
   torso_yaw: 0,
   use_torso_lean: false,
   torso_lean: 0,
   torso_tol: 25,
+  torso_presence: "any",
   match_mode: "paired",
   top_k: 36,
 };
@@ -89,11 +92,17 @@ export function App() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [batchTagInput, setBatchTagInput] = useState("");
+  const [sidebarTagFilter, setSidebarTagFilter] = useState("");
+  const [pendingImport, setPendingImport] = useState<{
+    files: File[];
+    sourceType: "upload" | "paste";
+  } | null>(null);
   const [importing, setImporting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastSelectedIdxRef = useRef<number | null>(null);
   const filtersRef = useRef<SearchRequest>(filters);
   filtersRef.current = filters;
   const hasSearchedRef = useRef(hasSearched);
@@ -166,10 +175,12 @@ export function App() {
         ...filtersRef.current,
         query: "",
         similar_to_image_id: useVisual ? item.id : null,
+        head_presence: useHead ? "require" : "any",
         use_head_yaw: useHead,
         use_head_pitch: useHead,
         head_yaw: head ? clamp(Math.round(head.yaw), -90, 90) : filtersRef.current.head_yaw,
         head_pitch: head ? clamp(Math.round(head.pitch), -60, 60) : filtersRef.current.head_pitch,
+        torso_presence: useTorso ? "require" : "any",
         use_torso_yaw: useTorso,
         use_torso_lean: useTorso,
         torso_yaw: torso
@@ -189,20 +200,60 @@ export function App() {
   );
 
   const handleImportFiles = useCallback(
-    async (files: File[], sourceType: "upload" | "paste") => {
-      const imageFiles = files.filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp|bmp)$/i.test(f.name));
+    (files: File[], sourceType: "upload" | "paste") => {
+      const imageFiles = files.filter(
+        (f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp|bmp)$/i.test(f.name)
+      );
       if (imageFiles.length === 0) return;
 
+      setPendingImport((prev) => {
+        if (!prev) return { files: imageFiles, sourceType };
+        return {
+          files: [...prev.files, ...imageFiles],
+          sourceType: prev.sourceType,
+        };
+      });
+    },
+    []
+  );
+
+  const handleConfirmImport = useCallback(
+    async (selectedTags: string[], viewAfterImport: boolean) => {
+      if (!pendingImport || pendingImport.files.length === 0) return;
       setImporting(true);
-      setToast(`Importing ${imageFiles.length} reference image(s)...`);
       try {
-        const res = await api.importImages(imageFiles, sourceType);
+        const res = await api.importImages(
+          pendingImport.files,
+          pendingImport.sourceType,
+          selectedTags
+        );
         const parts = [`Imported ${res.imported.length}`];
-        if (res.skipped_duplicates > 0) parts.push(`${res.skipped_duplicates} duplicate(s) skipped`);
+        if (selectedTags.length > 0 && res.imported.length > 0) {
+          parts.push(`tagged: ${selectedTags.join(", ")}`);
+        }
+        if (res.skipped_duplicates > 0) {
+          parts.push(`${res.skipped_duplicates} duplicate(s) skipped`);
+        }
         if (res.errors > 0) parts.push(`${res.errors} failed`);
         setToast(parts.join(" · "));
+        setPendingImport(null);
         await refreshMeta();
-        if (hasSearchedRef.current) {
+
+        if (viewAfterImport) {
+          if (selectedTags.length > 0 && res.imported.length > 0 && res.imported[0].tags.length > 0) {
+            const next = {
+              ...filtersRef.current,
+              query: "",
+              similar_to_image_id: null,
+              tag_ids: res.imported[0].tags.map((t) => t.id),
+            };
+            setSimilarAnchor(null);
+            setFilters(next);
+            await runSearch(next);
+          } else {
+            await runSearch(filtersRef.current);
+          }
+        } else if (hasSearchedRef.current) {
           await runSearch(filtersRef.current);
         }
       } catch (err) {
@@ -211,7 +262,7 @@ export function App() {
         setImporting(false);
       }
     },
-    [refreshMeta, runSearch]
+    [pendingImport, refreshMeta, runSearch]
   );
 
   useEffect(() => {
@@ -301,21 +352,91 @@ export function App() {
     setFilters((prev) => ({ ...prev, ...patch }));
   };
 
-  const toggleFilterTag = (tagId: number) => {
+  const toggleFilterTag = (tagId: number, searchImmediately = true) => {
     const exists = filters.tag_ids.includes(tagId);
-    const next = exists
+    const nextTagIds = exists
       ? filters.tag_ids.filter((id) => id !== tagId)
       : [...filters.tag_ids, tagId];
-    patchFilters({ tag_ids: next });
+    const next = { ...filters, tag_ids: nextTagIds };
+    setFilters(next);
+    if (searchImmediately) {
+      runSearch(next);
+    }
   };
 
-  const toggleSelectImage = (id: number) => {
+  const handleSearchSubmit = () => {
+    const tokens = filters.query.split(/\s+/);
+    const matchedTagIds = new Set(filters.tag_ids);
+    const keptTokens: string[] = [];
+
+    for (const tok of tokens) {
+      if (tok.startsWith("#") && tok.length > 1) {
+        const clean = tok.slice(1).replace(/_/g, " ").toLowerCase();
+        const found = tags.find(
+          (t) =>
+            t.name.toLowerCase() === clean ||
+            t.name.toLowerCase().replace(/\s+/g, "") === clean.replace(/\s+/g, "")
+        );
+        if (found) {
+          matchedTagIds.add(found.id);
+          continue;
+        }
+      }
+      if (tok) keptTokens.push(tok);
+    }
+
+    const next: SearchRequest = {
+      ...filters,
+      query: keptTokens.join(" "),
+      tag_ids: Array.from(matchedTagIds),
+    };
+    setFilters(next);
+    runSearch(next);
+  };
+
+  const toggleSelectImage = (id: number, index: number, shiftKey: boolean) => {
+    if (!selectionMode) setSelectionMode(true);
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (shiftKey && lastSelectedIdxRef.current !== null && matches.length > 0) {
+        const lo = Math.max(0, Math.min(lastSelectedIdxRef.current, index));
+        const hi = Math.min(matches.length - 1, Math.max(lastSelectedIdxRef.current, index));
+        for (let i = lo; i <= hi; i += 1) {
+          next.add(matches[i].id);
+        }
+      } else {
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+      }
       return next;
     });
+    lastSelectedIdxRef.current = index;
+  };
+
+  const handleSelectAll = () => {
+    setSelectionMode(true);
+    setSelectedIds(new Set(matches.map((m) => m.id)));
+  };
+
+  const handleInvertSelection = () => {
+    setSelectionMode(true);
+    setSelectedIds((prev) => {
+      const next = new Set<number>();
+      for (const m of matches) {
+        if (!prev.has(m.id)) next.add(m.id);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectUntagged = () => {
+    setSelectionMode(true);
+    setSelectedIds(new Set(matches.filter((m) => m.tags.length === 0).map((m) => m.id)));
+  };
+
+  const handleDeselectAll = () => {
+    setSelectedIds(new Set());
+    lastSelectedIdxRef.current = null;
   };
 
   const handleBatchAddTag = async (name: string) => {
@@ -422,34 +543,54 @@ export function App() {
               <button
                 type="button"
                 className="btn btn-sm"
-                onClick={() => patchFilters({ tag_ids: [] })}
+                onClick={() => {
+                  const next = { ...filters, tag_ids: [] };
+                  setFilters(next);
+                  if (hasSearchedRef.current) runSearch(next);
+                }}
               >
-                Clear
+                Clear ({filters.tag_ids.length})
               </button>
             )}
           </div>
           {tags.length === 0 ? (
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              Tag characters, people, or styles via the Lightbox or Select mode.
+              Tag characters, people, or styles on import, in Lightbox, or via Select mode.
             </div>
           ) : (
             <>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {tags.map((tag) => {
-                  const active = filters.tag_ids.includes(tag.id);
-                  return (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      className={`tag-chip ${active ? "active" : ""}`}
-                      onClick={() => toggleFilterTag(tag.id)}
-                    >
-                      <span className="tag-dot" style={{ background: tag.color }} />
-                      <span>{tag.name}</span>
-                      <span style={{ color: "var(--text-muted)" }}>{tag.image_count ?? 0}</span>
-                    </button>
-                  );
-                })}
+              {tags.length > 4 && (
+                <input
+                  className="input"
+                  style={{ padding: "5px 8px", fontSize: 12 }}
+                  value={sidebarTagFilter}
+                  onChange={(e) => setSidebarTagFilter(e.target.value)}
+                  placeholder="Filter tags..."
+                />
+              )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 170, overflowY: "auto" }}>
+                {tags
+                  .filter(
+                    (tag) =>
+                      !sidebarTagFilter.trim() ||
+                      tag.name.toLowerCase().includes(sidebarTagFilter.trim().toLowerCase())
+                  )
+                  .map((tag) => {
+                    const active = filters.tag_ids.includes(tag.id);
+                    return (
+                      <button
+                        key={tag.id}
+                        type="button"
+                        className={`tag-chip ${active ? "active" : ""}`}
+                        onClick={() => toggleFilterTag(tag.id, true)}
+                        title={active ? "Remove tag filter" : "Search with this tag"}
+                      >
+                        <span className="tag-dot" style={{ background: tag.color }} />
+                        <span>{tag.name}</span>
+                        <span style={{ color: "var(--text-muted)" }}>{tag.image_count ?? 0}</span>
+                      </button>
+                    );
+                  })}
               </div>
               {filters.tag_ids.length > 1 && (
                 <div className="control-row">
@@ -458,9 +599,14 @@ export function App() {
                     className="select"
                     style={{ width: "auto", padding: "3px 8px", fontSize: 12 }}
                     value={filters.tag_mode}
-                    onChange={(e) =>
-                      patchFilters({ tag_mode: e.target.value as "all" | "any" })
-                    }
+                    onChange={(e) => {
+                      const next = {
+                        ...filters,
+                        tag_mode: e.target.value as "all" | "any",
+                      };
+                      setFilters(next);
+                      runSearch(next);
+                    }}
                   >
                     <option value="all">Match All</option>
                     <option value="any">Match Any</option>
@@ -522,7 +668,7 @@ export function App() {
           className="search-bar"
           onSubmit={(e) => {
             e.preventDefault();
-            runSearch(filters);
+            handleSearchSubmit();
           }}
         >
           <div className="search-input-wrap">
@@ -531,7 +677,7 @@ export function App() {
               className="search-input"
               value={filters.query}
               onChange={(e) => patchFilters({ query: e.target.value })}
-              placeholder='Search outfit, lighting, prop, or Ctrl+V paste an image to import...'
+              placeholder='Search description or #tag (or Ctrl+V paste image to import)...'
             />
           </div>
           <button
@@ -540,6 +686,7 @@ export function App() {
             onClick={() => {
               setSelectionMode((prev) => !prev);
               setSelectedIds(new Set());
+              lastSelectedIdxRef.current = null;
             }}
           >
             <CheckSquare size={15} />
@@ -549,6 +696,96 @@ export function App() {
             {searching ? "Searching..." : "Search"}
           </button>
         </form>
+
+        {(() => {
+          const activeTags = tags.filter((t) => filters.tag_ids.includes(t.id));
+          const qLower = filters.query.trim().replace(/^#/, "").toLowerCase();
+          const suggestedFromQuery =
+            qLower.length > 0
+              ? tags
+                  .filter(
+                    (t) =>
+                      !filters.tag_ids.includes(t.id) &&
+                      t.name.toLowerCase().includes(qLower)
+                  )
+                  .slice(0, 6)
+              : [];
+          if (activeTags.length === 0 && suggestedFromQuery.length === 0) return null;
+          return (
+            <div className="search-tags-strip">
+              {activeTags.length > 0 && (
+                <>
+                  <span style={{ color: "var(--text-muted)", fontWeight: 600 }}>Tags:</span>
+                  {activeTags.map((tag) => (
+                    <span key={tag.id} className="tag-chip active">
+                      <span className="tag-dot" style={{ background: tag.color }} />
+                      <span>{tag.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => toggleFilterTag(tag.id, true)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          color: "var(--text-secondary)",
+                        }}
+                        title="Remove tag filter"
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ))}
+                  {activeTags.length > 1 && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ fontSize: 11, padding: "2px 8px" }}
+                      onClick={() => {
+                        const nextMode: "all" | "any" =
+                          filters.tag_mode === "all" ? "any" : "all";
+                        const next: SearchRequest = { ...filters, tag_mode: nextMode };
+                        setFilters(next);
+                        runSearch(next);
+                      }}
+                    >
+                      {filters.tag_mode === "all" ? "Match All" : "Match Any"}
+                    </button>
+                  )}
+                </>
+              )}
+              {suggestedFromQuery.length > 0 && (
+                <>
+                  <span style={{ color: "var(--text-muted)", marginLeft: activeTags.length > 0 ? 8 : 0 }}>
+                    Matching tags:
+                  </span>
+                  {suggestedFromQuery.map((tag) => (
+                    <button
+                      key={`q-${tag.id}`}
+                      type="button"
+                      className="tag-chip"
+                      onClick={() => {
+                        const next = {
+                          ...filters,
+                          query: "",
+                          tag_ids: [...filters.tag_ids, tag.id],
+                        };
+                        setFilters(next);
+                        runSearch(next);
+                      }}
+                      title={`Filter library by tag "${tag.name}"`}
+                    >
+                      <span className="tag-dot" style={{ background: tag.color }} />
+                      <span>+ #{tag.name}</span>
+                      <span style={{ color: "var(--text-muted)" }}>{tag.image_count ?? 0}</span>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          );
+        })()}
 
         <div className="results-meta">
           <span>
@@ -560,8 +797,18 @@ export function App() {
               `Library overview · ${totalIndexed} references ready`
             )}
           </span>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {elapsedMs !== null && hasSearched && <span>{elapsedMs.toFixed(1)} ms</span>}
+            {hasSearched && matches.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleSelectAll}
+                title="Select all displayed images"
+              >
+                Select All ({matches.length})
+              </button>
+            )}
             {hasSearched && (
               <button type="button" className="btn btn-sm" onClick={resetToOverview}>
                 <Home size={12} />
@@ -726,12 +973,46 @@ export function App() {
           />
         </div>
 
-        {selectionMode && selectedIds.size > 0 && (
+        {selectionMode && matches.length > 0 && (
           <div className="batch-bar">
             <span style={{ fontSize: 13, fontWeight: 600 }}>
               <Tag size={14} style={{ verticalAlign: "middle", marginRight: 6 }} />
-              {selectedIds.size} selected
+              {selectedIds.size} / {matches.length} selected
             </span>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleSelectAll}
+                title="Select all visible results"
+              >
+                All
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleInvertSelection}
+                title="Invert selection across visible results"
+              >
+                Invert
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleSelectUntagged}
+                title="Select visible images that have no tags yet"
+              >
+                Untagged
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={selectedIds.size === 0}
+                onClick={handleDeselectAll}
+              >
+                None
+              </button>
+            </div>
             <form
               style={{ display: "flex", gap: 6 }}
               onSubmit={(e) => {
@@ -741,15 +1022,16 @@ export function App() {
             >
               <input
                 className="input"
-                style={{ width: 220, padding: "6px 10px" }}
+                style={{ width: 200, padding: "6px 10px" }}
                 value={batchTagInput}
                 onChange={(e) => setBatchTagInput(e.target.value)}
                 placeholder="Add tag (e.g. Character A)..."
+                disabled={selectedIds.size === 0}
               />
               <button
                 type="submit"
                 className="btn btn-primary btn-sm"
-                disabled={!batchTagInput.trim()}
+                disabled={selectedIds.size === 0 || !batchTagInput.trim()}
               >
                 Apply Tag
               </button>
@@ -759,6 +1041,7 @@ export function App() {
                 key={tag.id}
                 type="button"
                 className="btn btn-sm"
+                disabled={selectedIds.size === 0}
                 onClick={() => handleBatchAddTag(tag.name)}
                 title={`Add "${tag.name}" to selected`}
               >
@@ -770,6 +1053,7 @@ export function App() {
                 key={`rm-${tag.id}`}
                 type="button"
                 className="btn btn-danger btn-sm"
+                disabled={selectedIds.size === 0}
                 onClick={() => handleBatchRemoveTag(tag.name)}
                 title={`Remove "${tag.name}" from selected`}
               >
@@ -780,6 +1064,7 @@ export function App() {
               type="button"
               className="btn btn-danger btn-sm"
               style={{ marginLeft: "auto" }}
+              disabled={selectedIds.size === 0}
               onClick={handleBatchDelete}
             >
               <Trash2 size={13} /> Delete Selected
@@ -787,9 +1072,12 @@ export function App() {
             <button
               type="button"
               className="btn btn-sm"
-              onClick={() => setSelectedIds(new Set())}
+              onClick={() => {
+                setSelectionMode(false);
+                handleDeselectAll();
+              }}
             >
-              <X size={13} /> Clear
+              <X size={13} /> Done
             </button>
           </div>
         )}
@@ -816,8 +1104,33 @@ export function App() {
           if (hasSearchedRef.current) runSearch(filters);
         }}
         onFindSimilar={handleFindSimilar}
+        onFilterByTag={(tagId) => {
+          setLightboxIndex(null);
+          setSimilarAnchor(null);
+          const next = { ...filtersRef.current, similar_to_image_id: null, tag_ids: [tagId] };
+          setFilters(next);
+          runSearch(next);
+        }}
         onClose={() => setLightboxIndex(null)}
         onNavigate={(nextIdx) => setLightboxIndex(nextIdx)}
+      />
+
+      <ImportConfirmModal
+        files={pendingImport?.files ?? []}
+        sourceType={pendingImport?.sourceType ?? "upload"}
+        existingTags={tags}
+        importing={importing}
+        onRemoveFile={(idx) =>
+          setPendingImport((prev) => {
+            if (!prev) return null;
+            const remaining = prev.files.filter((_, i) => i !== idx);
+            return remaining.length > 0 ? { ...prev, files: remaining } : null;
+          })
+        }
+        onConfirm={handleConfirmImport}
+        onCancel={() => {
+          if (!importing) setPendingImport(null);
+        }}
       />
 
       <FolderManagerModal

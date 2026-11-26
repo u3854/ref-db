@@ -114,3 +114,9 @@ def test_search_semantic_and_paired_vs_independent(tmp_path: Path):
     back_req = SearchRequest(use_torso_yaw=True, torso_yaw=180.0, torso_tol=10.0)
     back_res = idx.search(back_req, text_embedding=None)
     assert back_res.total_matches == 2
+
+    # Whole-part presence filters: exclude head -> only back.png; require head -> only multi.png
+    no_head_res = idx.search(SearchRequest(head_presence="exclude"), text_embedding=None)
+    assert [m.filename for m in no_head_res.matches] == ["back.png"]
+    has_head_res = idx.search(SearchRequest(head_presence="require"), text_embedding=None)
+    assert [m.filename for m in has_head_res.matches] == ["multi.png"]
